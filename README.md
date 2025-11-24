@@ -7,6 +7,11 @@
 
 ---
 
+## 👤 Linux User Baca Ini
+Pilih Branch Linux untuk menggunakannya
+
+---
+
 ## ✨ Fitur Utama
 * **🎙️ Push-to-Talk Recording:** Tekan dan tahan tombol `Left Shift` untuk merekam suara, sehingga hanya poin penting yang masuk.
 * **🤖 Integrasi Gemini AI:** Menggunakan model `gemini-2.5-flash` untuk transkripsi akurat dan analisis konteks yang cepat.
