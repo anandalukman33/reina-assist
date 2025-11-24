@@ -9,7 +9,7 @@ if not GOOGLE_API_KEY:
     raise ValueError("API Key tidak ditemukan! Pastikan file .env sudah dibuat.")
 
 TEMP_FILENAME = "temp_gui_rec.wav"
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 44100 #untuk windows = 16000
 CHUNK_SIZE = 1024
 
 WINDOW_SIZE = "400x600"

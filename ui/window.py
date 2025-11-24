@@ -5,6 +5,24 @@ import keyboard
 import time
 import os
 from datetime import datetime
+import platform
+
+IS_LINUX = platform.system() != 'Windows'
+USE_PYNPUT = False
+
+try:
+    if IS_LINUX:
+        from pynput import keyboard as pynput_keyboard
+        USE_PYNPUT = True
+        keyboard = None 
+    else:
+        import keyboard
+        pynput_keyboard = None
+        
+except ImportError as e:
+    import keyboard 
+    pynput_keyboard = None
+    print(f"Warning: Hotkey library import error: {e}")
 
 import config
 from utils import insert_markdown_text
@@ -18,6 +36,7 @@ class MeetingAssistantGUI:
         
         self.is_running = True
         self.is_recording = False
+        self.should_stop_recording = False
         self.current_device_index = None
         self.chat_counter = 0
         
@@ -38,8 +57,18 @@ class MeetingAssistantGUI:
         except Exception as e:
             self.system_log(f"Init Error: {e}", "error")
         
-        self.thread = threading.Thread(target=self.logic_loop, daemon=True)
-        self.thread.start()
+        if USE_PYNPUT:
+            self.kb_listener = pynput_keyboard.Listener(
+                on_press=self.on_key_press,
+                on_release=self.on_key_release,
+                daemon=True
+            )
+            self.kb_listener.start()
+            self.system_log(f"Hotkey Listener started using pynput (Linux)", "info")
+        else:
+            self.thread = threading.Thread(target=self.logic_loop, daemon=True)
+            self.thread.start()
+            self.system_log(f"Hotkey Polling started using keyboard (Windows)", "info")
 
     def setup_window(self):
         self.root.title("AI Meeting Assistant - Lukman Edition")
@@ -114,7 +143,6 @@ class MeetingAssistantGUI:
             btn_widget.config(text="[+] Show Request")
 
     def add_chat_bubble(self, transcript, response, duration):
-        """Menambahkan bubble chat dengan separator dan collapsible request"""
         self.chat_counter += 1
         tag_id = f"request_{self.chat_counter}"
         
@@ -137,7 +165,7 @@ class MeetingAssistantGUI:
         self.txt_output.insert(tk.END, f"{transcript}\n", tag_id)
         self.txt_output.tag_configure(tag_id, elide=True, foreground="#aaaaaa", lmargin1=20)
         
-        self.txt_output.insert(tk.END, "\n") # Spacer
+        self.txt_output.insert(tk.END, "\n")
         insert_markdown_text(self.txt_output, response)
         self.txt_output.insert(tk.END, "\n")
         
@@ -168,14 +196,44 @@ class MeetingAssistantGUI:
         self.lbl_status.config(text="STANDBY (Hold SHIFT)", foreground="white")
         self.volume_bar['value'] = 0
 
+    def on_key_press(self, key):
+        if USE_PYNPUT and not self.is_recording:
+            try:
+                if key == pynput_keyboard.Key.shift_l: 
+                    threading.Thread(target=self._start_pynput_recording, daemon=True).start()
+            except Exception:
+                pass
+
+    def on_key_release(self, key):
+        if USE_PYNPUT and self.is_recording:
+            try:
+                if key == pynput_keyboard.Key.shift_l:
+                    self.should_stop_recording = True
+            except Exception:
+                pass
+
+    def _start_pynput_recording(self):
+        self.should_stop_recording = False
+        self.start_recording_session()
+
     def logic_loop(self):
+        if USE_PYNPUT:
+            return
+
         while self.is_running:
-            if keyboard.is_pressed('left_shift'):
-                if not self.is_recording:
-                    self.start_recording_session()
+            try:
+                if keyboard.is_pressed('left_shift'):
+                    if not self.is_recording:
+                        self.start_recording_session()
+            except Exception as e:
+                self.system_log(f"Hotkey check error: {e}", "error")
+                time.sleep(1)
             time.sleep(0.05)
 
     def start_recording_session(self):
+        if self.is_recording:
+            return
+            
         self.is_recording = True
         self.lbl_status.config(text="● RECORDING...", foreground="#ff0000")
         self.system_log("Recording started...", "info")
@@ -183,7 +241,15 @@ class MeetingAssistantGUI:
         audio_frames = []
         try:
             stream = self.audio_service.create_stream(self.current_device_index)
-            while keyboard.is_pressed('left_shift'):
+
+            if USE_PYNPUT:
+                loop_condition = lambda: self.is_running and not self.should_stop_recording
+                sleep_time = 0.01
+            else:
+                loop_condition = lambda: keyboard.is_pressed('left_shift')
+                sleep_time = 0.01
+
+            while loop_condition():
                 try:
                     data = stream.read(config.CHUNK_SIZE, exception_on_overflow=False)
                     audio_frames.append(data)
@@ -191,24 +257,37 @@ class MeetingAssistantGUI:
                     self.volume_bar['value'] = vol
                 except:
                     break
+                
+                time.sleep(sleep_time)
+                    
             stream.stop_stream()
             stream.close()
 
-            saved_path = self.audio_service.save_wav(audio_frames)
-            self.system_log(f"Audio captured ({len(audio_frames)} chunks)", "success")
-            
-            threading.Thread(target=self.process_ai_response, args=(saved_path,)).start()
+            if len(audio_frames) > 0:
+                saved_path = self.audio_service.save_wav(audio_frames)
+                self.system_log(f"Audio captured ({len(audio_frames)} chunks)", "success")
+                
+                threading.Thread(target=self.process_ai_response, args=(saved_path,)).start()
+            else:
+                self.system_log("Recording stopped, but no audio frames captured.", "info")
 
         except Exception as e:
             self.system_log(f"Rec Error: {e}", "error")
-        
-        self.is_recording = False
+        finally:
+             self.is_recording = False
+             if self.lbl_status.cget('text') == "● RECORDING...":
+                 self.lbl_status.config(text="STANDBY (Hold SHIFT)", foreground="white") 
+             self.volume_bar['value'] = 0
 
     def on_closing(self):
         self.is_running = False
         try:
+            if USE_PYNPUT and hasattr(self, 'kb_listener'):
+                self.kb_listener.stop()
+            if not USE_PYNPUT and hasattr(self, 'thread'):
+                pass 
             self.audio_service.terminate()
-        except:
+        except Exception:
             pass
         self.root.destroy()
         os._exit(0)
